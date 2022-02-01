@@ -23,6 +23,13 @@ def usage():
 
 def dprint(message):
     if DEBUG:
+        dfh = open(debug_log, 'a')
+        dfh.write(message + "\n")
+        dfh.close()
+    return()
+
+def vprint(message):
+    if VERBOSE:
         print(message)
 
 def python_input(message):
@@ -117,7 +124,7 @@ def walk_tree (rubrik, id, delim, path, parent):
                 job_queue.put(threading.Thread(name=new_path, target=walk_tree, args=(rubrik, id, delim, new_path, dir_ent)))
         if not rbk_walk['hasMore']:
             done = True
-        print("DIR: " + path + " // FILES: " + str(file_count))
+        dprint("DIR: " + path + " // FILES: " + str(file_count))
         if file_count > 0:
             dir_list.append(path)
             sample = randrange(len(file_list))
@@ -161,6 +168,7 @@ if __name__ == "__main__":
     thread_factor = 10
     max_size = 0
     num_files = 10
+    debug_log = "debug_log.txt"
 
     optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:', ['--help', '--DEBUG', '--verbose', '--latest',
                                                                        '--creds=', '--token=', '--backup=', '--fileset=',
@@ -172,6 +180,8 @@ if __name__ == "__main__":
         if opt in ('-D', '--DEBUG'):
             DEBUG = True
             VERBOSE = True
+            dfh = open(debug_log, "w")
+            dfh.close()
         if opt in ('-v', '--verbose'):
             VERBOSE = True
         if opt in ('-l', '--latest'):
@@ -311,14 +321,14 @@ if __name__ == "__main__":
     threading.Thread(name='root_walk', target=walk_tree, args=(rubrik, snap_list[current_index][0], delim, initial_path, {})).start()
     print("Waiting for jobs to queue")
     time.sleep(20)
-    print("PPQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
+    dprint("PPQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
     first = True
     while first or not job_queue.empty() or threading.activeCount() > 1:
         first = False
         if threading.activeCount()-1 < max_threads and not job_queue.empty():
             job = job_queue.get()
-            print("\nQueue: " + str(job_queue.qsize()))
-            print("Running Threads: " + str(threading.activeCount()-1))
+            vprint("\nQueue: " + str(job_queue.qsize()))
+            vprint("Running Threads: " + str(threading.activeCount()-1))
             job.start()
         elif not job_queue.empty():
             time.sleep(10)
@@ -327,7 +337,7 @@ if __name__ == "__main__":
         else:
             print("\nWaiting on " + str(threading.activeCount()-1) + " jobs to finish.")
             time.sleep(10)
-        print("PQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
+        dprint("PQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
 #    print(dir_list)
 #    print(empty_dir)
     dprint(file_samples)
