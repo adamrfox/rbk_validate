@@ -122,6 +122,12 @@ def walk_tree (rubrik, id, delim, path, parent):
             dir_list.append(path)
             sample = randrange(len(file_list))
             file_samples.append(file_list[sample])
+            if file_count > 10:
+                sample = randrange(len(file_list))
+                file_samples.append(file_list[sample])
+            if file_count > 20:
+                sample = randrange(len(file_list))
+                file_samples.append(file_list[sample])
         else:
             empty_dir.append(path)
 
