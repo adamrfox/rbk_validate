@@ -340,7 +340,7 @@ if __name__ == "__main__":
         dprint("PQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
 #    print(dir_list)
 #    print(empty_dir)
-    dprint(file_samples)
+    dprint(str(file_samples))
     print("Selecting Files....")
     files_selected = []
     selected_size = 0
