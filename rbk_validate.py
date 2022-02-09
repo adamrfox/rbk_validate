@@ -111,12 +111,13 @@ def get_rubrik_nodes(rubrik, user, password, token):
                 node_list.append({'session': rbk_session, 'name': n['node']})
     return (node_list)
 
-def get_sample(file_samples, file_list, count):
+def get_sample(file_list, count):
+    samples = []
     for i in range(count):
-        sample = randrange(len(file_list):
-        file_samples.append(file_list[sample]))
+        sample = randrange(len(file_list))
+        samples.append(file_list[sample])
         i += 1
-    return(file_samples)
+    return(samples)
 
 
 def walk_tree(rubrik, id, delim, path, parent):
@@ -163,28 +164,18 @@ def walk_tree(rubrik, id, delim, path, parent):
         dprint("DIR: " + path + " // FILES: " + str(file_count))
         total_file_count.increment(file_count)
         if SAMPLING != "none":
-            if file_count > 0:
-                sample = randrange(len(file_list))
-                file_samples.append(file_list[sample])
-                if SAMPLING == "default":
-                    if file_count > 10:
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                    if file_count > 20:
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                    if file_count > 50:
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                    if file_count > 100:
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
-                        sample = randrange(len(file_list))
-                        file_samples.append(file_list[sample])
+            if file_count > 0 :
+                sample_list = []
+                if SAMPLING == "max" or file_count <= 10:
+                    sample_list = get_sample(file_list, 1)
+                elif file_count < 50:
+                    sample_list = get_sample(file_list, 2)
+                elif file_count < 100:
+                    sample_list = get_sample(file_list, 5)
+                else:
+                    sample_list = get_sample(file_list, 10)
+                for f in sample_list:
+                    file_samples.append(f)
             else:
                 empty_dir.append(path)
         else:
