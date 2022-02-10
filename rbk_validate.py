@@ -206,6 +206,7 @@ if __name__ == "__main__":
     VERBOSE = False
     NAS = False
     SAMPLING = "default"
+    VALIDATION = "restore"
     INJECT_FAILURE = False
     timeout = 360
     rubrik_cluster = []
@@ -220,11 +221,11 @@ if __name__ == "__main__":
     total_file_count = AtomicCounter()
     debug_log = "debug_log.txt"
 
-    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:F',
+    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:FV:',
                                   ['--help', '--DEBUG', '--verbose', '--latest',
                                    '--creds=', '--token=', '--backup=', '--fileset=',
                                    '--date=', '--max_threads=', '--thread_factor=',
-                                   '--size=', '--number_files=', '--sampling=', '--inject_failure'])
+                                   '--size=', '--number_files=', '--sampling=', '--inject_failure', '--validate='])
     for opt, a in optlist:
         if opt in ('-h', '--help'):
             usage()
@@ -267,7 +268,11 @@ if __name__ == "__main__":
                 exit(1)
         if opt in ('-F', '--inject_failure'):
             INJECT_FAILURE = True
-
+        if opt in ('-V', '--validate'):
+            VALIDATE = a.lower()
+            if VALIDATE not in ('restore', 'patch', 'all'):
+                sys.stderr.write("Valid validations values: 'restore', 'patch', 'both'\n")
+                exit(1)
     try:
         (restore_location, rubrik_node) = args
     except:
@@ -356,9 +361,9 @@ if __name__ == "__main__":
             exit(3)
         fs_data = rubrik.get('v1', '/fileset?host_id=' + share_id, timeout=timeout)
     h_data = rubrik.get('v1', '/host?name=' + restore_host, timeout=timeout)
-    for host in h_data['data']:
-        if host['name'] == restore_host:
-            restore_host_id = host['id']
+    for h in h_data['data']:
+        if h['name'] == restore_host:
+            restore_host_id = h['id']
             break
     if not restore_host_id:
         sys.stderr.write("Can't find Restore Host ID\n")
@@ -463,7 +468,10 @@ if __name__ == "__main__":
         if len(files_selected) == max_files:
             done = True
     if INJECT_FAILURE:
-        files_selected.append({'srcPath': '/foo/bar/baz', 'dstPath': '/restore/foo/bar'})
+        if host == restore_host:
+            files_selected.append({'path': '/foo/bar/baz', 'restorePath': '/restore/foo/bar'})
+        else:
+            files_selected.append({'srcPath': '/foo/bar/baz', 'dstPath': '/restore/foo/bar'})
     print("Selected " + str(len(files_selected)) + " files totaling " + get_size_from_bytes(selected_size))
     if host == restore_host:
         payload['restoreConfig'] = files_selected
@@ -531,10 +539,16 @@ if __name__ == "__main__":
             except KeyError:
                 pass
             break
-    print("VALIDATION: " + ev_status, end='')
+    print("RESTORE VALIDATION: " + ev_status, end='')
     if ev_reason:
         print(" : " + ev_reason)
     else:
         print('\n')
+
+
+
+##TODO Physical Filesets
+##TODO VMware Files
+##TODO Rubrik Verification
 
 
