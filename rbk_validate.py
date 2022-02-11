@@ -205,6 +205,7 @@ if __name__ == "__main__":
     DEBUG = False
     VERBOSE = False
     NAS = False
+    VMWARE = False
     SAMPLING = "default"
     VALIDATION = "restore"
     INJECT_FAILURE = False
@@ -290,7 +291,7 @@ if __name__ == "__main__":
     else:
         host = backup
         try:
-            (restore_host, restore_path) = restore_location.split(':')
+            (restore_host, restore_path) = restore_location.split(';')
         except ValueError:
             restore_host = restore_location
     if not fileset:
@@ -480,7 +481,9 @@ if __name__ == "__main__":
         if NAS:
             payload['shareId'] = restore_share_id
             payload['hostId'] = restore_host_id
-    payload['ignoreErrors'] = True
+        elif not VMWARE:
+            payload['hostId'] = restore_host_id
+    payload['ignoreErrors'] = False
     dprint("RESTORE PAYLOAD:")
     dprint(str(payload))
     print("Restoring files....")
@@ -508,8 +511,16 @@ if __name__ == "__main__":
                 sys.stdout.flush()
                 first = False
             else:
-                print("\b\b\b" + str(progress) + "%", end='')
+                for x in range(0,digits+1):
+                    print('\b', end='')
+                print(str(progress) + "%", end='')
                 sys.stdout.flush()
+            if progress < 10:
+                digits = 1
+            elif progress < 100:
+                digits = 2
+            else:
+                digits = 3
             time.sleep(5)
         elif job_status in ['SUCCEEDED', 'FAILED']:
             print("\nDone")
@@ -519,7 +530,7 @@ if __name__ == "__main__":
             exit(1)
         else:
             print("\nStatus: " + job_status)
-    if NAS:
+    if not VMWARE:
         object_ids = share_id + ',' + fs_id
     events = rubrik.get('v1', '/event/latest?limit=50&event_type=Recovery&object_ids='+ object_ids, timeout=timeout)
     ev_series_id = ""
@@ -547,7 +558,6 @@ if __name__ == "__main__":
 
 
 
-##TODO Physical Filesets
 ##TODO VMware Files
 ##TODO Rubrik Verification
 
