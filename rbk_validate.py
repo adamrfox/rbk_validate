@@ -133,8 +133,12 @@ def walk_tree(rubrik, id, delim, path, parent):
                 print("Starting job " + path + " on " + rubrik_cluster[job_ptr]['name'])
             else:
                 print(' . ', end='')
-        rbk_walk = rubrik_cluster[job_ptr]['session'].get('v1', '/fileset/snapshot/' + str(id) + '/browse',
+        if not NAS:
+            rbk_walk = rubrik_cluster[job_ptr]['session'].get('v1', '/fileset/snapshot/' + str(id) + '/browse',
                                                           params=params, timeout=timeout)
+        else:
+            rbk_walk = rubrik_cluster[job_ptr]['session'].get('internal', '/browse?path=' + path + '&offset=' +
+                                                              str(offset) + "&snapshot_id=" + str(id))
         file_count = 0
         for dir_ent in rbk_walk['data']:
             offset += 1
@@ -182,6 +186,28 @@ def walk_tree(rubrik, id, delim, path, parent):
             for f in file_list:
                 file_samples.append(f)
 
+def get_folder_path(v):
+    vfp = []
+    for fp in v['folderPath']:
+        if fp['name'] == "vm":
+            continue
+        vfp.append(fp['name'])
+    return(vfp)
+
+def find_vm_with_path(vm_data):
+    v_id = ""
+    delim = ""
+    for v in vm_data['data']:
+        vm_folder_path = get_folder_path(v)
+        dprint("VP: " + str(vm_folder_path) + " // HF: " + str(hf))
+        if vm_folder_path == hf:
+            v_id = v['id']
+            if 'Windows' in v['guestOsName']:
+                delim = "\\"
+            else:
+                delim = "/"
+            break
+    return(v_id, delim)
 
 if __name__ == "__main__":
     backup = ""
@@ -221,6 +247,8 @@ if __name__ == "__main__":
     num_files = 10
     total_file_count = AtomicCounter()
     debug_log = "debug_log.txt"
+    vm_folder_path = []
+    vm_id = ""
 
     optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:FV:',
                                   ['--help', '--DEBUG', '--verbose', '--latest',
@@ -295,7 +323,7 @@ if __name__ == "__main__":
         except ValueError:
             restore_host = restore_location
     if not fileset:
-        fileset = python_input("Fileset: ")
+        VMWARE = True
     if not token:
         if not user:
             user = python_input("User: ")
@@ -338,7 +366,7 @@ if __name__ == "__main__":
             sys.stderr.write("Restore share not found\n")
             exit(2)
         fs_data = rubrik.get('v1', str("/fileset?share_id=" + share_id + "&name=" + fileset), timeout=timeout)
-    else:
+    elif not VMWARE:
         hs_data = rubrik.get('v1', '/host?name=' + host, timeout=timeout)
         share_id = str(hs_data['data'][0]['id'])
         os_type = str(hs_data['data'][0]['operatingSystemType'])
@@ -361,22 +389,86 @@ if __name__ == "__main__":
             sys.stderr.write("OS Type Mismatch\n")
             exit(3)
         fs_data = rubrik.get('v1', '/fileset?host_id=' + share_id, timeout=timeout)
-    h_data = rubrik.get('v1', '/host?name=' + restore_host, timeout=timeout)
-    for h in h_data['data']:
-        if h['name'] == restore_host:
-            restore_host_id = h['id']
-            break
+    else:
+        vm_has_path = False
+        if '/' in host:
+            hf = host.split('/')
+            host = hf.pop()
+            vm_has_path = True
+        dprint("VM_HOST = " + host)
+        vm_data = rubrik.get('v1', '/vmware/vm?name=' + host, timeout=timeout)
+        if vm_data['total'] == 0:
+            sys.stderr.write('VM not found\n')
+            exit(2)
+        if vm_data['total'] > 1:
+            if vm_has_path:
+                (vm_id, delim) = find_vm_with_path(vm_data)
+                if not vm_id:
+                    sys.stderr.write("VM host found.\n")
+                    exit(2)
+            else:
+                sys.stderr.write("Multiple VMs found.  Use a folder path to specify the desired VM\n")
+                exit(2)
+        else:
+            if vm_has_path:
+                (vm_id, delim) = find_vm_with_path(vm_data)
+            else:
+                vm_id = vm_data['data'][0]['id']
+                if 'Windows' in vm_data['data'][0]['guestOsName']:
+                    delim = '\\'
+                else:
+                    delim = '/'
+        initial_path = '/'
+        dprint("VM_ID: " + vm_id)
+    if not VMWARE:
+        h_data = rubrik.get('v1', '/host?name=' + restore_host, timeout=timeout)
+        for h in h_data['data']:
+            if h['name'] == restore_host:
+                restore_host_id = h['id']
+                break
+    else:
+        vm_has_path = False
+        if '/' in host:
+            hf = host.split('/')
+            host = hf.pop()
+            vm_has_path = True
+        dprint("VM_RES_HOST = " + host)
+        vm_data = rubrik.get('v1', '/vmware/vm?name=' + restore_host, timeout=timeout)
+        if vm_data['total'] == 0:
+            sys.stderr.write('Restore VM not found\n')
+            exit(2)
+        if vm_data['total'] > 1:
+            if vm_has_path:
+                vm_id = find_vm_with_path(vm_data)
+                if not vm_id:
+                    sys.stderr.write("Restore VM host found.\n")
+                    exit(2)
+            else:
+                sys.stderr.write("Multiple Restore VMs found.  Use a folder path to specify the desired VM\n")
+                exit(2)
+        else:
+            if vm_has_path:
+                restore_host_id = find_vm_with_path(vm_data)
+            else:
+                restore_host_id = vm_data['data'][0]['id']
     if not restore_host_id:
         sys.stderr.write("Can't find Restore Host ID\n")
         exit(2)
-    fs_id = ""
-    for fs in fs_data['data']:
-        if fs['name'] == fileset:
-            fs_id = fs['id']
-            break
-    dprint(fs_id)
-    snap_data = rubrik.get('v1', str("/fileset/" + fs_id), timeout=timeout)
+    if not VMWARE:
+        fs_id = ""
+        for fs in fs_data['data']:
+            if fs['name'] == fileset:
+                fs_id = fs['id']
+                break
+        dprint(fs_id)
+        snap_data = rubrik.get('v1', str("/fileset/" + fs_id), timeout=timeout)
+        pprint(snap_data)
+    else:
+        snap_data = rubrik.get('v1', "/vmware/vm/" + vm_id, timeout=timeout)
+        pprint(snap_data)
     for snap in snap_data['snapshots']:
+        if snap['indexState'] == 0:
+            continue
         s_time = snap['date']
         s_id = snap['id']
         s_time = s_time[:-5]
