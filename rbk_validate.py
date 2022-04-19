@@ -12,14 +12,12 @@ import urllib3
 import json
 urllib3.disable_warnings()
 import threading
-
 try:
     import queue
 except ImportError:
     import Queue as queue
 from random import randrange
 from pprint import pprint
-
 
 class AtomicCounter:
 
@@ -36,7 +34,6 @@ class AtomicCounter:
             self.value += num
             return self.value
 
-
 def usage():
     print("Usage goes here!")
     exit(0)
@@ -49,11 +46,9 @@ def dprint(message):
         dfh.close()
     return ()
 
-
 def vprint(message):
     if VERBOSE:
         print(message)
-
 
 def python_input(message):
     if int(sys.version[0]) > 2:
@@ -61,7 +56,6 @@ def python_input(message):
     else:
         val = raw_input(message)
     return (val)
-
 
 def get_bytes(size, unit):
     if unit in ('g', 'G'):
@@ -75,7 +69,6 @@ def get_bytes(size, unit):
         sys.exit(1)
     return (size)
 
-
 def get_size_from_bytes(bytes):
     if bytes >= 1024 * 1024 * 1024 * 1024:
         size = str(int(bytes / 1024 / 1024 / 1024 / 1024)) + " TB"
@@ -86,7 +79,6 @@ def get_size_from_bytes(bytes):
     else:
         size = str(bytes) + " Bytes"
     return (size)
-
 
 def get_rubrik_nodes(rubrik, user, password, token):
     node_list = []
@@ -118,7 +110,6 @@ def get_sample(file_list, count):
         samples.append(file_list[sample])
         i += 1
     return(samples)
-
 
 def walk_tree(rubrik, id, delim, path, parent, exclude_paths):
     offset = 0
@@ -166,6 +157,11 @@ def walk_tree(rubrik, id, delim, path, parent, exclude_paths):
                     else:
                         new_path = path + "\\" + dir_ent['path']
                 #                files_to_restore = walk_tree(rubrik, id, inc_date, delim, new_path, dir_ent, files_to_restore)
+                if VMWARE:
+                    check_path = rubrik_cluster[job_ptr]['session'].get('internal', '/search?managed_id=' + vm_id +
+                                                                       '&query_string=' + new_path, timeout=timeout)
+                    if check_path['total'] == 0:
+                        continue
                 job_queue.put(
                     threading.Thread(name=new_path, target=walk_tree, args=(rubrik, id, delim, new_path, dir_ent, exclude_paths)))
         if not rbk_walk['hasMore']:
@@ -214,6 +210,45 @@ def find_vm_with_path(vm_data):
             break
     return(v_id, delim)
 
+def run_patch_verify(rubrik, object, snap):
+    payload = {'objectId': object, 'snapshotIdsOpt': [snap]}
+    dprint("VERIFY_PAYLOAD:")
+    dprint(str(payload))
+    verify_job = rubrik.post('v1', '/backup/verify', payload, timeout=timeout)
+    dprint("VERIFY:")
+    dprint(str(verify_job))
+    done = False
+    first = True
+    print("Patch Validation:")
+    while not done:
+        restore_job_status = rubrik.get('v1', '/backup/verify/' + verify_job['id'], timeout=timeout)
+        job_status = restore_job_status['status']
+        if job_status in ['RUNNING', 'QUEUED', 'ACQUIRING', 'FINISHING']:
+            progress = int(restore_job_status['progress'])
+            if first:
+                print("Progress: " + str(progress) + "%", end='')
+                sys.stdout.flush()
+                first = False
+            else:
+                for x in range(0, digits + 1):
+                    print('\b', end='')
+                print(str(progress) + "%", end='')
+                sys.stdout.flush()
+            if progress < 10:
+                digits = 1
+            elif progress < 100:
+                digits = 2
+            else:
+                digits = 3
+            time.sleep(5)
+        elif job_status in ['SUCCEEDED', 'FAILED']:
+            return(job_status)
+        elif job_status == "TO_CANCEL" or 'endTime' in job_status:
+            sys.stderr.write("\nJob ended with status: " + job_status + "\n")
+            exit(1)
+        else:
+            return(job_status)
+
 if __name__ == "__main__":
     backup = ""
     rubrik = ""
@@ -255,13 +290,15 @@ if __name__ == "__main__":
     vm_folder_path = []
     vm_id = ""
     exclude_paths = []
+    first_path = ""
+    jobs_types_to_run = ['restore']
 
-    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:FV:x:',
+    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:FV:x:j:',
                                   ['--help', '--DEBUG', '--verbose', '--latest',
                                    '--creds=', '--token=', '--backup=', '--fileset=',
                                    '--date=', '--max_threads=', '--thread_factor=',
                                    '--size=', '--number_files=', '--sampling=', '--inject_failure', '--validate=',
-                                   '-exclude='])
+                                   '--exclude=','--jobs='])
     for opt, a in optlist:
         if opt in ('-h', '--help'):
             usage()
@@ -311,6 +348,15 @@ if __name__ == "__main__":
                 exit(1)
         if opt in ('-x', '--exclude'):
             exclude_paths = a.split(',')
+        if opt in ('-j', '--jobs'):
+            jobs_types_to_run = []
+            jt_list = a.split(',')
+            for j in jt_list:
+                if j in ['patch', 'restore']:
+                    jobs_types_to_run.append(j)
+                else:
+                    sys.stderr.write("Job types are 'restore' and 'patch'\n")
+                    exit(2)
     try:
         (restore_location, rubrik_node) = args
     except:
@@ -476,7 +522,7 @@ if __name__ == "__main__":
         snap_data = rubrik.get('v1', "/vmware/vm/" + str(vm_id), timeout=timeout)
 #        pprint(snap_data)
     for snap in snap_data['snapshots']:
-        if snap['indexState'] == 0:
+        if VMWARE and snap['indexState'] == 0:
             continue
         s_time = snap['date']
         s_id = snap['id']
@@ -486,8 +532,14 @@ if __name__ == "__main__":
         snap_dt_s = snap_dt.strftime('%Y-%m-%d %H:%M:%S')
         snap_list.append((s_id, snap_dt_s))
     if latest:
-        start_index = len(snap_list) - 1
-        start_id = snap_list[-1][0]
+#        start_index = len(snap_list) - 1
+#        start_id = snap_list[-1][0]
+        for a, snap in reversed(list(enumerate(snap_data['snapshots']))):
+            if snap['indexState'] == 0:
+                continue
+            start_index = a
+            start_id = snap_list[a][0]
+            break
     elif date:
         dprint("TDATE: " + date_dt_s)
         for i, s in enumerate(snap_list):
@@ -515,6 +567,18 @@ if __name__ == "__main__":
         if not go_s.startswith('Y') and not go_s.startswith('y'):
             exit(0)
     current_index = int(start_index)
+    if 'patch' in jobs_types_to_run:
+        if not VMWARE:
+            patch_job = run_patch_verify(rubrik, fs_id, snap_list[current_index][0])
+        else:
+            patch_job = run_patch_verify(rubrik, vm_id, snap_list[current_index][0])
+        if patch_job != "SUCCEEDED":
+            sys.stderr.write("\nPatch Verification Failed: " + status + "\n")
+            exit(5)
+        print("\nPatch Verification Passed!")
+    if not 'restore' in jobs_types_to_run:
+        exit(0)
+    dprint("SNAP_ID: " + str(snap_list[current_index][0]))
     print("Scanning for Sample Files...")
     threading.Thread(name='root_walk', target=walk_tree,
                      args=(rubrik, snap_list[current_index][0], delim, initial_path, {}, exclude_paths)).start()
@@ -562,18 +626,27 @@ if __name__ == "__main__":
         fpf = file_samples[pick][0].split(delim)
         fpf.pop(-1)
         rp = delim.join(fpf)
+        if not rp:
+            rp = delim
         if host == restore_host or VMWARE:
-            files_selected.append({'path': file_samples[pick][0], 'restorePath': restore_path + rp})
+            files_selected.append({'path': str(file_samples[pick][0]), 'restorePath': str(restore_path) + str(rp)})
         else:
-            files_selected.append({'srcPath': file_samples[pick][0], 'dstPath': restore_path + rp})
+            files_selected.append({'srcPath': str(file_samples[pick][0]), 'dstPath': str(restore_path) + str(rp)})
         selected_size += file_samples[pick][1]
         if len(files_selected) == max_files:
             done = True
     if INJECT_FAILURE:
-        if host == restore_host or VMWARE:
-            files_selected.append({'path': '/foo/bar/baz', 'restorePath': '/restore/foo/bar'})
+        if not VMWARE:
+            if host == restore_host:
+                files_selected.append({'path': '/foo/bar/baz', 'restorePath': '/restore/foo/bar'})
+            else:
+                files_selected.append({'srcPath': '/foo/bar/baz', 'dstPath': '/restore/foo/bar'})
         else:
-            files_selected.append({'srcPath': '/foo/bar/baz', 'dstPath': '/restore/foo/bar'})
+            if delim == "\\":
+                files_selected.append({'path': 'C:\\foo\\bar\\baz', 'restorePath': 'C:\\restore\\foo\\bar'})
+            else:
+                files_selected.append({'path': '/foo/bar/baz', 'restorePath': '/restore/foo/bar'})
+
     print("Selected " + str(len(files_selected)) + " files totaling " + get_size_from_bytes(selected_size))
     if host == restore_host or VMWARE:
         payload['restoreConfig'] = files_selected
@@ -591,28 +664,27 @@ if __name__ == "__main__":
         payload['password'] = ""
         payload['domainName'] = ""
         payload['shouldSaveCredentials'] = False
-        payload['shouldUseAgent'] = False
+        payload['shouldUseAgent'] = True
     payload['ignoreErrors'] = False
     dprint("RESTORE PAYLOAD:")
     dprint(str(payload))
     print("Restoring files....")
     if host == restore_host:
-        first_path = files_selected[0]['path']
         if not VMWARE:
-            rubrik_restore = rubrik.post('internal', '/fileset/snapshot/' + start_id + '/restore_files',
+            first_path = files_selected[0]['path']
+            rubrik_restore = rubrik.post('internal', '/fileset/snapshot/' + str(start_id) + '/restore_files',
                                      payload, timeout=timeout)
         else:
-            uri = "/vmware/vm/snapshot/" + start_id + "/restore_files"
-            print("URI: " + uri)
+            uri = "/vmware/vm/snapshot/" + str(start_id) + "/restore_files"
             rubrik_restore = rubrik.post('internal', uri,
                                          payload, timeout=timeout)
     else:
-        first_path = files_selected[0]['srcPath']
         if not VMWARE:
+            first_path = files_selected[0]['srcPath']
             rubrik_restore = rubrik.post('internal', "/fileset/snapshot/" + str(start_id) + "/export_files",
                                      payload, timeout=timeout)
         else:
-            rubrik_restore = rubrik.post('internal', '/vmware/vm/snapshot/ '+ str(start_id) + '/restore_files',
+            rubrik_restore = rubrik.post('internal', '/vmware/vm/snapshot/'+ str(start_id) + '/restore_files',
                                          payload, timeout=timeout)
     dprint("RESTORE:")
     dprint(str(rubrik_restore))
@@ -651,24 +723,33 @@ if __name__ == "__main__":
             print("\nStatus: " + job_status)
     if not VMWARE:
         object_ids = share_id + ',' + fs_id
-    events = rubrik.get('v1', '/event/latest?limit=50&event_type=Recovery&object_ids='+ object_ids, timeout=timeout)
+    else:
+        object_ids = vm_id
+    events = rubrik.get('v1', '/event/latest?limit=50&event_type=Recovery&object_ids='+ str(object_ids), timeout=timeout)
     ev_series_id = ""
     dprint("FIRST FILE: " + first_path)
     ev_status = ""
     ev_reason = ""
-    for ev in events['data']:
-        ev_data = ev['latestEvent']['eventInfo']
-        ev_message = json.loads(ev_data)
-        ev_s = ev_message['message']
-        evf = ev_s.split("'")
-        ev_path = evf[1]
-        if ev_path == first_path:
-            ev_status = ev['latestEvent']['eventStatus']
-            try:
-                ev_reason = ev_message['cause']['reason']
-            except KeyError:
-                pass
-            break
+    if not VMWARE:
+        for ev in events['data']:
+            ev_data = ev['latestEvent']['eventInfo']
+            ev_message = json.loads(ev_data)
+            ev_s = ev_message['message']
+            evf = ev_s.split("'")
+            ev_path = evf[1]
+            if ev_path == first_path:
+                ev_status = ev['latestEvent']['eventStatus']
+                try:
+                    ev_reason = ev_message['cause']['reason']
+                except KeyError:
+                    pass
+                break
+    else:
+        ev_status = events['data'][0]['latestEvent']['eventStatus']
+        try:
+            ev_reason = events['data'][0]['cause']['reason']
+        except KeyError:
+            pass
     print("RESTORE VALIDATION: " + ev_status, end='')
     if ev_reason:
         print(" : " + ev_reason)
@@ -678,7 +759,6 @@ if __name__ == "__main__":
 
 
 ##TODO VMware Files
-##TODO Rubrik Verification
 ##TODO Non-Verbose Output for Scan
 
 
