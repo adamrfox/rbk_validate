@@ -836,8 +836,6 @@ if __name__ == "__main__":
         if max_size:
             if selected_size + file_samples[pick][1] > max_size:
                 done = True
-        if duplicate_file(file_samples[pick][0], files_selected):
-            continue
         fpf = file_samples[pick][0].split(delim)
         fpf.pop(-1)
         rp = delim.join(fpf)
