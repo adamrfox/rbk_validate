@@ -18,6 +18,8 @@ except ImportError:
     import Queue as queue
 from random import randrange
 from pprint import pprint
+from os.path import exists as file_exists
+import string
 
 class AtomicCounter:
 
@@ -35,7 +37,25 @@ class AtomicCounter:
             return self.value
 
 def usage():
-    print("Usage goes here!")
+    sys.stderr.write("Usage: rbk_validate.py [-hDvl] [-c creds] [-t token] [-b backup] [-f fileset] [-d date] [-m max_threads [-M thread_factor] [-s size] [-n num_files] [-j job_types] [-S sampling] [-x excludes] restore_location rubrik\n")
+    sys.stderr.write("-h | --help : Prints this message\n")
+    sys.stderr.write("-D | --DEBUG : DEBUG mode.  Used for troubleshooting\n")
+    sys.stderr.write("-v | --verbose : Verbose output\n")
+    sys.stderr.write("-l | --latest : Use the latest backup\n")
+    sys.stderr.write("-c | --creds : Rubrik Credentials\n")
+    sys.stderr.write("-t | --token : Rubrik API token\n")
+    sys.stderr.write("-b | --backup : Backup to use.  host:share for NAS, host for physical\n")
+    sys.stderr.write("-f | --fileset : Specify a fileset name\n")
+    sys.stderr.write("-d | --date : Specify a backup by date\n")
+    sys.stderr.write("-m | --max_threads : Maximum number of threads.  [Def: 10x the number of nodes]\n")
+    sys.stderr.write("-M | --thread_factor : Specify threads per node [Def: 10]\n")
+    sys.stderr.write("-s | --size : Total space for restored files [Def: None]\n")
+    sys.stderr.write("-n | --num_files : Total number of files (raw number or %) [Def: 10 files]\n")
+    sys.stderr.write("-j | --jobs : Specify which jobs to run [restore, patch].  [Def: restore]\n")
+    sys.stderr.write("-S | --sampling : Specify the type of sampling [default, none, max, #] [Def: default]\n")
+    sys.stderr.write("-x | --exclude : Specify a list of paths to exclude (comma separated)\n")
+    sys.stderr.write("restore_location : Specify where to write restored files (host:share:path | host:path)\n")
+    sys.stderr.write("rubrik : Name or IP of a Rubrik node\n\n")d
     exit(0)
 
 
@@ -111,11 +131,91 @@ def get_sample(file_list, count):
         i += 1
     return(samples)
 
+def check_root_vm_path(job_ptr, id, path):
+    vp_browse = rubrik_cluster[job_ptr]['session'].get('internal', '/browse?path=' + path + "&offset=0&snapshot_id=" + str(id),
+                                                       timeout=timeout)
+#    print("VP_BROWSE: " + path)
+#    if path == "/boot":
+#        pprint(vp_browse)
+    for be in vp_browse['data']:
+        if not be['filename'][0] in string.punctuation:
+            file_check = path + "/" + be['filename']
+#            print("RCHECKING " + file_check)
+            f_cur = ""
+            f_check_done = False
+            while not f_check_done:
+#                print("F_CHECK_OUTER")
+                if f_cur:
+                    f_search = rubrik_cluster[job_ptr]['session'].get('internal', '/search?managed_id=' + vm_id + "&query_string="
+                                                              + file_check + "&cursor=" + f_cur, timeout=timeout)
+                else:
+                    f_search = rubrik_cluster[job_ptr]['session'].get('internal',
+                                                                      '/search?managed_id=' + vm_id + "&query_string="
+                                                                      + file_check, timeout=timeout)
+#                pprint(f_search)
+                for sr in f_search['data']:
+#                    print("SRP: " + sr['path'] + " // " + path)
+#                    print("SRF: " + sr['filename'] + " // " + be['filename'])
+                    if sr['path'] == path + '/' + be['filename']:
+#                        print('RFOUND ' + sr['path'] + '/' + sr['filename'])
+                        for v in sr['fileVersions']:
+                            if v['snapshotId'] == id:
+#                                print("RPATH: " + path + " :: True")
+#                                pprint(sr)
+#                                pprint(v)
+#                                time.sleep(10)
+                                print("RPATH: True")
+                                return (True)
+                if f_search['hasMore']:
+                    f_cur = check_dir['nextCursor']
+                else:
+#                    print("RPATH2 FALSE: " + path)
+                    return(False)
+
+        else:
+            continue
+#    print("RPATH: " + path + " :: False")
+    return(False)
+
+def check_vm_path(job_ptr, id, path):
+    pf = path.split('/')
+    file_name = pf.pop(-1)
+    path_name = '/'.join(pf)
+    path_name += "/" + file_name
+    check_done = False
+    cursor = ""
+    while not check_done:
+        if len(pf) == 1:
+#            print("CALLING CRVP: " + path + '/' + path_name)
+            return(check_root_vm_path(job_ptr, id, path))
+        if cursor:
+            check_dir = rubrik_cluster[job_ptr]['session'].get('internal', '/search?managed_id=' + vm_id + '&query_string=' + path_name +
+                                                           '&cursor=' + cursor, timeout=timeout)
+        else:
+            check_dir = rubrik_cluster[job_ptr]['session'].get('internal', '/search?managed_id=' + vm_id + '&query_string=' + path_name, timeout=timeout)
+        for d in check_dir['data']:
+            if d['path'] == path_name and d['filename'] == file_name:
+#                print('FOUND ' + d['path'] + '/' + d['filename'])
+                for v in d['fileVersions']:
+                    if v['snapshotId'] == id and v['fileMode'] == "directory":
+#                        pprint(d)
+#                        pprint(v)
+#                        time.sleep(10)
+                        return(True)
+        if check_dir['hasMore']:
+            cursor = check_dir['nextCursor']
+        else:
+            check_done = True
+    return(False)
+
 def walk_tree(rubrik, id, delim, path, parent, exclude_paths):
     offset = 0
     done = False
     file_count = 0
     file_list = []
+    sampling_mult = 1
+    if SAMPLING.isdigit():
+        sampling_mult = int(SAMPLING)
     if path.startswith(tuple(exclude_paths)):
         return
     while not done:
@@ -158,9 +258,9 @@ def walk_tree(rubrik, id, delim, path, parent, exclude_paths):
                         new_path = path + "\\" + dir_ent['path']
                 #                files_to_restore = walk_tree(rubrik, id, inc_date, delim, new_path, dir_ent, files_to_restore)
                 if VMWARE:
-                    check_path = rubrik_cluster[job_ptr]['session'].get('internal', '/search?managed_id=' + vm_id +
-                                                                       '&query_string=' + new_path, timeout=timeout)
-                    if check_path['total'] == 0:
+                    if not check_root_vm_path(job_ptr, id, new_path):
+                        exclude_paths.append(new_path)
+                        dprint("EXCLUDING: " + new_path)
                         continue
                 job_queue.put(
                     threading.Thread(name=new_path, target=walk_tree, args=(rubrik, id, delim, new_path, dir_ent, exclude_paths)))
@@ -174,11 +274,11 @@ def walk_tree(rubrik, id, delim, path, parent, exclude_paths):
                 if SAMPLING == "max" or file_count <= 10:
                     sample_list = get_sample(file_list, 1)
                 elif file_count < 50:
-                    sample_list = get_sample(file_list, 2)
+                    sample_list = get_sample(file_list, 2 * sampling_mult)
                 elif file_count < 100:
-                    sample_list = get_sample(file_list, 5)
+                    sample_list = get_sample(file_list, 5 * sampling_mult)
                 else:
-                    sample_list = get_sample(file_list, 10)
+                    sample_list = get_sample(file_list, 10 * sampling_mult)
                 for f in sample_list:
                     file_samples.append(f)
             else:
@@ -249,6 +349,119 @@ def run_patch_verify(rubrik, object, snap):
         else:
             return(job_status)
 
+def debug_restore(payload, id):
+    deb_res_payload = {}
+    if not VMWARE:
+        if NAS:
+            deb_res_payload['shareId'] = restore_share_id
+            deb_res_payload['hostId'] = restore_host_id
+        else:
+            deb_res_payload['hostId'] = restore_host_id
+    else:
+        if host != restore_host:
+            deb_res_payload['destObjId'] = restore_host_id
+        deb_res_payload['username'] = ""
+        deb_res_payload['password'] = ""
+        deb_res_payload['domainName'] = ""
+        deb_res_payload['shouldSaveCredentials'] = False
+        deb_res_payload['shouldUseAgent'] = True
+    payload['ignoreErrors'] = False
+    for fr in payload['restoreConfig']:
+        if host == restore_host or VMWARE:
+            deb_res_payload['restoreConfig'] = [{'path': fr['path'], 'restorePath': fr['restorePath']}]
+        elif not VMWARE:
+            deb_res_payload['exportPathPairs'] = [{'path': fr['path'], 'restorePath': fr['restorePath']}]
+        dprint("DEB_RES: " + str(deb_res_payload))
+        print("ID=" + str(id))
+        print("Restoring " + fr['path'])
+        if host == restore_host:
+            if not VMWARE:
+                first_path = fr['path']
+                deb_restore = rubrik.post('internal', '/fileset/snapshot/' + str(id) + '/restore_files',
+                                             deb_res_payload, timeout=timeout)
+            else:
+                uri = "/vmware/vm/snapshot/" + str(id) + "/restore_files"
+                deb_restore = rubrik.post('internal', uri,
+                                             deb_res_payload, timeout=timeout)
+        else:
+            if not VMWARE:
+                first_path = fr['path']
+                deb_restore = rubrik.post('internal', "/fileset/snapshot/" + str(id) + "/export_files",
+                                             deb_res_payload, timeout=timeout)
+            else:
+                deb_restore = rubrik.post('internal', '/vmware/vm/snapshot/' + str(id) + '/restore_files',
+                                             deb_res_payload, timeout=timeout)
+        job_status_url = str(deb_restore['links'][0]['href']).split('/')
+        job_status_path = "/" + "/".join(job_status_url[5:])
+        done = False
+        first = True
+        while not done:
+            restore_job_status = rubrik.get('v1', job_status_path)
+            job_status = restore_job_status['status']
+            if job_status in ['RUNNING', 'QUEUED', 'ACQUIRING', 'FINISHING']:
+                progress = int(restore_job_status['progress'])
+                if first:
+                    print("Progress: " + str(progress) + "%", end='')
+                    sys.stdout.flush()
+                    first = False
+                else:
+                    for x in range(0, digits + 1):
+                        print('\b', end='')
+                    print(str(progress) + "%", end='')
+                    sys.stdout.flush()
+                if progress < 10:
+                    digits = 1
+                elif progress < 100:
+                    digits = 2
+                else:
+                    digits = 3
+                time.sleep(5)
+            elif job_status in ['SUCCEEDED', 'FAILED']:
+                print("\nDone")
+                done = True
+            elif job_status == "TO_CANCEL" or 'endTime' in job_status:
+                sys.stderr.write("\nJob ended with status: " + job_status + "\n")
+                exit(1)
+            else:
+                print("\nStatus: " + job_status)
+        if not VMWARE:
+            object_ids = share_id + ',' + fs_id
+        else:
+            object_ids = vm_id
+        events = rubrik.get('v1', '/event/latest?limit=50&event_type=Recovery&object_ids=' + str(object_ids),
+                            timeout=timeout)
+        ev_series_id = ""
+        ev_status = ""
+        ev_reason = ""
+        if not VMWARE:
+            dprint("FIRST_PATH: " + first_path)
+            for ev in events['data']:
+                ev_data = ev['latestEvent']['eventInfo']
+                ev_message = json.loads(ev_data)
+                ev_s = ev_message['message']
+                evf = ev_s.split("'")
+                ev_path = evf[1]
+                if ev_path == first_path:
+                    ev_status = ev['latestEvent']['eventStatus']
+                    try:
+                        ev_reason = ev_message['cause']['reason']
+                    except KeyError:
+                        pass
+                    break
+        else:
+            ev_status = events['data'][0]['latestEvent']['eventStatus']
+            try:
+                ev_reason = events['data'][0]['cause']['reason']
+            except KeyError:
+                pass
+        print("RESTORE VALIDATION: " + ev_status, end='')
+        if ev_reason:
+            print(" : " + ev_reason)
+        else:
+            print('\n')
+        time.sleep(15)
+    exit(0)
+
 if __name__ == "__main__":
     backup = ""
     rubrik = ""
@@ -275,7 +488,7 @@ if __name__ == "__main__":
     SAMPLING = "default"
     VALIDATION = "restore"
     INJECT_FAILURE = False
-    timeout = 360
+    timeout = 600
     rubrik_cluster = []
     job_queue = queue.Queue()
     dir_list = []
@@ -284,7 +497,7 @@ if __name__ == "__main__":
     max_threads = 0
     thread_factor = 10
     max_size = 0
-    num_files = 10
+    num_files = "10"
     total_file_count = AtomicCounter()
     debug_log = "debug_log.txt"
     vm_folder_path = []
@@ -293,11 +506,11 @@ if __name__ == "__main__":
     first_path = ""
     jobs_types_to_run = ['restore']
 
-    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:FV:x:j:',
+    optlist, args = getopt.getopt(sys.argv[1:], 'hDvlc:t:b:f:d:m:M:s:n:S:Fx:j:',
                                   ['--help', '--DEBUG', '--verbose', '--latest',
                                    '--creds=', '--token=', '--backup=', '--fileset=',
                                    '--date=', '--max_threads=', '--thread_factor=',
-                                   '--size=', '--number_files=', '--sampling=', '--inject_failure', '--validate=',
+                                   '--size=', '--number_files=', '--sampling=', '--inject_failure',
                                    '--exclude=','--jobs='])
     for opt, a in optlist:
         if opt in ('-h', '--help'):
@@ -336,16 +549,11 @@ if __name__ == "__main__":
             num_files = a
         if opt in ('-S', '--sampling'):
             SAMPLING = a.lower()
-            if SAMPLING not in ('default', 'none', 'max'):
-                sys.stderr.write("Valid sampling values: 'default', 'none', 'max'\n")
+            if SAMPLING not in ('default', 'none', 'max') and not SAMPLING.isdigit():
+                sys.stderr.write("Valid sampling values: 'default', 'none', 'max' or a numerical multiplier\n")
                 exit(1)
         if opt in ('-F', '--inject_failure'):
             INJECT_FAILURE = True
-        if opt in ('-V', '--validate'):
-            VALIDATE = a.lower()
-            if VALIDATE not in ('restore', 'patch', 'all'):
-                sys.stderr.write("Valid validations values: 'restore', 'patch', 'both'\n")
-                exit(1)
         if opt in ('-x', '--exclude'):
             exclude_paths = a.split(',')
         if opt in ('-j', '--jobs'):
@@ -599,6 +807,10 @@ if __name__ == "__main__":
             print("Running Threads: " + str(threading.activeCount() - 1))
         else:
             print("\nWaiting on " + str(threading.activeCount() - 1) + " jobs to finish.")
+            if DEBUG and threading.activeCount() < 35:
+                dprint(str(threading.activeCount()) + " jobs:")
+                for thread in threading.enumerate():
+                    dprint(thread.name)
             time.sleep(10)
         dprint("PQ: " + str(job_queue.empty()) + '// AC: ' + str(threading.activeCount()))
     #    print(dir_list)
@@ -616,12 +828,15 @@ if __name__ == "__main__":
     if max_files > len(file_samples):
         print("Requested number of files larger than file sample.  Restoring " + str(len(file_samples)) + " files.")
         max_files = len(file_samples)
+    picked_list = []
     while not done:
         pick = randrange(len(file_samples))
+        if pick in picked_list:
+            continue
         if max_size:
             if selected_size + file_samples[pick][1] > max_size:
                 done = True
-        if file_samples[pick][0] in files_selected:
+        if duplicate_file(file_samples[pick][0], files_selected):
             continue
         fpf = file_samples[pick][0].split(delim)
         fpf.pop(-1)
@@ -634,6 +849,7 @@ if __name__ == "__main__":
             files_selected.append({'srcPath': str(file_samples[pick][0]), 'dstPath': str(restore_path) + str(rp)})
         selected_size += file_samples[pick][1]
         if len(files_selected) == max_files:
+            dprint("LEN FS:" + str(len(files_selected)))
             done = True
     if INJECT_FAILURE:
         if not VMWARE:
@@ -669,6 +885,8 @@ if __name__ == "__main__":
     dprint("RESTORE PAYLOAD:")
     dprint(str(payload))
     print("Restoring files....")
+#    if DEBUG:
+#        debug_restore(payload, start_id)
     if host == restore_host:
         if not VMWARE:
             first_path = files_selected[0]['path']
@@ -713,7 +931,7 @@ if __name__ == "__main__":
             else:
                 digits = 3
             time.sleep(5)
-        elif job_status in ['SUCCEEDED', 'FAILED']:
+        elif job_status in ['SUCCEEDED', 'FAILED', 'CANCELED']:
             print("\nDone")
             done = True
         elif job_status == "TO_CANCEL" or 'endTime' in job_status:
@@ -755,8 +973,10 @@ if __name__ == "__main__":
         print(" : " + ev_reason)
     else:
         print('\n')
-
-
+    if ev_status == "Failure":
+        for f, p in enumerate(payload['restoreConfig']):
+            if not file_exists(p['restorePath']):
+                print(str(f) + p['path'] + " not found")
 
 ##TODO VMware Files
 ##TODO Non-Verbose Output for Scan
