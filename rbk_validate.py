@@ -55,7 +55,7 @@ def usage():
     sys.stderr.write("-S | --sampling : Specify the type of sampling [default, none, max, #] [Def: default]\n")
     sys.stderr.write("-x | --exclude : Specify a list of paths to exclude (comma separated)\n")
     sys.stderr.write("restore_location : Specify where to write restored files (host:share:path | host:path)\n")
-    sys.stderr.write("rubrik : Name or IP of a Rubrik node\n\n")d
+    sys.stderr.write("rubrik : Name or IP of a Rubrik node\n\n")
     exit(0)
 
 
