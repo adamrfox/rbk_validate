@@ -833,6 +833,7 @@ if __name__ == "__main__":
         pick = randrange(len(file_samples))
         if pick in picked_list:
             continue
+        picked_list.append(pick)
         if max_size:
             if selected_size + file_samples[pick][1] > max_size:
                 done = True
